@@ -1,0 +1,162 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates Lambda function to enable GuardyDuty in Security account.
+Parameters:
+  OrganizationId:
+    Type: String
+    Description: AWS Organizations ID for the Control Tower.
+    Default: 'o-a4tlobvmc0'
+    AllowedPattern: '^[o][\-][a-z0-9]{10}$'
+    ConstraintDescription: The Org Id must be a 12 character string starting with o- and followed by 10 lower case alphanumeric characters
+    MinLength: 12
+    MaxLength: 12
+  SecurityAccountId:
+    Type: String
+    Description: Which account will be GuardyDuty Admin account? Enter AWS Account ID.
+    Default: 413157014023
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: The Security Account ID must be a 12 character string.
+    MinLength: 12
+    MaxLength: 12
+  RegionFilter:
+    Type: String
+    Description: Only Control Tower support Regions
+    Default: ControlTower
+  OUFilter:
+    Type: String
+    Description: Accounts in specified OU name
+    Default: 'CCOETEST-OU'
+  S3SourceBucket:
+    Type: String
+    Description: S3 bucket containing GuardDutyAdminEnabler Lambda package
+    Default: 'org-sh-ops'
+  S3SourceKey:
+    Type: String
+    Description: S3 object key for GuardDutyAdminEnabler Lambda package
+    Default: 'guardduty_enabler.zip'
+  RoleToAssume:
+    Type: String
+    Description: IAM role to be assumed in child accounts to enable GuardDuty. Default is AWSControlTowerExecution for a Control Tower environment.
+    Default: AWSControlTowerExecution
+Resources:
+  GuardDutyAdminEnablerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AWSCloudFormationFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/service-role/AWSControlTowerServiceRolePolicy'
+      Policies:
+        - PolicyName: GuardDutyAdminEnablerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'organizations:ListAccounts'
+                  - 'organizations:DescribeAccount'
+                  - 'organizations:ListParents'
+                  - 'organizations:EnableAWSServiceAccess'
+                  - 'organizations:RegisterDelegatedAdministrator'
+                  - 'organizations:ListDelegatedAdministrators'
+                  - 'organizations:ListAWSServiceAccessForOrganization'
+                  - 'organizations:DescribeOrganization'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:PrincipalOrgId': !Ref OrganizationId
+              - Effect: Allow
+                Action:
+                  organizations:DescribeOrganizationalUnit
+                Resource: !Sub 'arn:aws:organizations::${AWS::AccountId}:ou/${OrganizationId}/ou-*'
+              - Effect: Allow
+                Action:
+                  - 'ec2:DescribeRegions'
+                  - 'guardduty:List*'
+                  - 'guardduty:AcceptInvitation'
+                  - 'guardduty:Create*'
+                  - 'guardduty:AcceptInvitation'
+                  - 'guardduty:InviteMembers'
+                  - 'guardduty:StartMonitoringMembers'
+                  - 'guardduty:Update*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'iam:CreateServiceLinkedRole'
+                Resource: '*'
+                Condition:
+                  StringLike:
+                    'iam:AWSServiceName': 'guardduty.amazonaws.com'
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: !Sub 'arn:aws:iam::*:role/${RoleToAssume}'
+                Condition:
+                  StringEquals:
+                    'aws:PrincipalOrgId': !Ref OrganizationId
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: !Sub 'arn:aws:iam::*:role/${RoleToAssume}'              
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*:log-stream:*'
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource: !Ref GuardDutyEnablerTopic
+  GuardDutyEnablerTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: GuardDuty_Enabler
+      TopicName: GuardDutyEnablerTopic
+  GuardDutyEnablerTopicPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt GuardDutyAdminEnablerLambda.Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref GuardDutyEnablerTopic
+  GuardDutyEnablerTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt GuardDutyAdminEnablerLambda.Arn
+      Protocol: lambda
+      TopicArn: !Ref GuardDutyEnablerTopic
+  GuardDutyAdminEnablerLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - GuardDutyAdminEnablerRole
+    Properties:
+      Handler: 'guardduty_enabler.lambda_handler'
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${GuardDutyAdminEnablerRole}'
+      Code:
+        S3Bucket: !Ref S3SourceBucket
+        S3Key: !Ref S3SourceKey
+      Runtime: python3.8
+      MemorySize: 256
+      Timeout: 900
+      ReservedConcurrentExecutions: 2
+      Environment:
+        Variables:
+          ou_filter: !Ref OUFilter
+          region_filter: !Ref RegionFilter
+          assume_role: !Ref RoleToAssume
+          ct_admin_account: !Sub ${AWS::AccountId}
+          gd_admin_account: !Ref SecurityAccountId
+          topic: !Ref GuardDutyEnablerTopic
+          log_level: INFO

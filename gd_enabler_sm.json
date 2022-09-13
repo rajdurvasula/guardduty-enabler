@@ -1,0 +1,94 @@
+{
+    "Comment": "A description of my state machine",
+    "StartAt": "EnableGuardDutyAdmin",
+    "States": {
+      "EnableGuardDutyAdmin": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "OutputPath": "$.Payload",
+        "Parameters": {
+          "Payload.$": "$",
+          "FunctionName": "arn:aws:lambda:us-east-1:538857479523:function:EnableGuardDutyAdmin:$LATEST"
+        },
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "Lambda.ServiceException",
+              "Lambda.AWSLambdaException",
+              "Lambda.SdkClientException"
+            ],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 6,
+            "BackoffRate": 2
+          }
+        ],
+        "Next": "MapOfRegions"
+      },
+      "MapOfRegions": {
+        "Type": "Map",
+        "End": true,
+        "Iterator": {
+          "StartAt": "GetOUAccounts",
+          "States": {
+            "GetOUAccounts": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "OutputPath": "$.Payload",
+              "Parameters": {
+                "Payload.$": "$",
+                "FunctionName": "arn:aws:lambda:us-east-1:538857479523:function:GetOUAccounts:$LATEST"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 6,
+                  "BackoffRate": 2
+                }
+              ],
+              "Next": "MapOfAccounts"
+            },
+            "MapOfAccounts": {
+              "Type": "Map",
+              "End": true,
+              "Iterator": {
+                "StartAt": "EnableGuardDutyMember",
+                "States": {
+                  "EnableGuardDutyMember": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "OutputPath": "$.Payload",
+                    "Parameters": {
+                      "Payload.$": "$",
+                      "FunctionName": "arn:aws:lambda:us-east-1:538857479523:function:EnableGuardDutyMember:$LATEST"
+                    },
+                    "Retry": [
+                      {
+                        "ErrorEquals": [
+                          "Lambda.ServiceException",
+                          "Lambda.AWSLambdaException",
+                          "Lambda.SdkClientException"
+                        ],
+                        "IntervalSeconds": 2,
+                        "MaxAttempts": 6,
+                        "BackoffRate": 2
+                      }
+                    ],
+                    "End": true
+                  }
+                }
+              },
+              "ItemsPath": "$.accounts",
+              "MaxConcurrency": 1
+            }
+          }
+        },
+        "ItemsPath": "$.ct_regions",
+        "MaxConcurrency": 1
+      }
+    }
+  }
